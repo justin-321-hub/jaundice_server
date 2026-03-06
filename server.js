@@ -13,7 +13,7 @@ const app = express();
    CORS（允許 GitHub Pages 來源）
    ========================= */
 app.use(cors({
-  origin: ['https://taipei-101-run-up.smartchat.live','https://justin-321-hub.github.io','https://taipei-101-run-up-english.smartchat.live'],
+  origin: ['https://jaundice.smartchat.live','https://justin-321-hub.github.io','https://taipei-101-run-up-english.smartchat.live'],
   methods: ['GET', 'POST', 'OPTIONS'],
   // 保留 X-Client-Id 供多使用者識別
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Client-Id'],
