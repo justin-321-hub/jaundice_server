@@ -13,7 +13,7 @@ const app = express();
    CORS（允許 GitHub Pages 來源）
    ========================= */
 app.use(cors({
-  origin: ['https://jaundice.smartchat.live','https://justin-321-hub.github.io','https://taipei-101-run-up-english.smartchat.live'],
+  origin: ['https://jaundice.smartchat.live','https://justin-321-hub.github.io','https://taipei-101-run-up-english.smartchat.live','https://justin-321-hub.github.io/jaundice_inside/'],
   methods: ['GET', 'POST', 'OPTIONS'],
   // 保留 X-Client-Id 供多使用者識別
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Client-Id'],
@@ -72,6 +72,51 @@ app.post('/api/chat', async (req, res) => {
     }
   } catch (err) {
     console.error('[chat] fetch failed:', err?.name, err?.message, err?.cause?.code);
+    return res.status(502).json({
+      error: 'Upstream fetch failed',
+      detail: err?.message || String(err)
+    });
+  }
+});
+
+/* =========================
+   n8n 代理：jaundice_clinical → jaundice-clinical Webhook
+   ========================= */
+app.post('/api/chat-clinical', async (req, res) => {
+  const url = process.env.N8N_WEBHOOK_URL_CLINICAL;
+  if (!url) return res.status(500).json({ error: '缺少 N8N_WEBHOOK_URL_CLINICAL' });
+
+  const cid = req.body?.clientId || req.headers['x-client-id'] || 'anon';
+
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'fourleaf-proxy/1.0',
+        'X-Client-Id': cid
+      },
+      body: JSON.stringify({ ...(req.body || {}), clientId: cid })
+    });
+
+    const ct = r.headers.get('content-type') || '';
+    const raw = await r.text();
+
+    if (!r.ok) {
+      console.error('[chat-clinical] upstream error:', r.status, raw);
+      return res
+        .status(r.status)
+        .type(ct || 'application/json')
+        .send(raw || JSON.stringify({ error: 'chat-clinical error' }));
+    }
+
+    if (ct.includes('application/json')) {
+      return res.status(200).type('application/json').send(raw || '{}');
+    } else {
+      return res.status(200).json({ text: raw });
+    }
+  } catch (err) {
+    console.error('[chat-clinical] fetch failed:', err?.name, err?.message, err?.cause?.code);
     return res.status(502).json({
       error: 'Upstream fetch failed',
       detail: err?.message || String(err)
