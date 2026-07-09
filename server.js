@@ -7,8 +7,12 @@ const express = require('express');
 const path = require('path');
 const cors = require('cors');
 const admin = require('firebase-admin');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
+
+// Render 在反向代理後面，需要信任 X-Forwarded-For 才能拿到真實的使用者 IP
+app.set('trust proxy', 1);
 
 /* =========================
    Firebase Admin 初始化
@@ -98,6 +102,30 @@ async function requireAuth(req, res, next) {
 }
 
 /* =========================
+   Rate limiting（S3：防止配額被打爆）
+   規則：
+   - 每分鐘最多 3 次請求
+   - 已登入（req.verifiedUid 由前面的身分驗證中介層設定）→ 以 uid 為 key
+   - 未登入 → 退回以 IP 為 key
+   - /api/chat 與 /api/chat-clinical 各自獨立計算，互不影響
+   ========================= */
+function createChatRateLimiter() {
+  return rateLimit({
+    windowMs: 60 * 1000,
+    max: 3,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.verifiedUid || req.ip,
+    handler: (_req, res) => {
+      res.status(429).json({ error: '請求太頻繁，請稍後再試' });
+    }
+  });
+}
+
+const chatRateLimiter = createChatRateLimiter();
+const chatClinicalRateLimiter = createChatRateLimiter();
+
+/* =========================
    CORS（允許前端來源：家長端 + 醫護端）
    ========================= */
 app.use(cors({
@@ -121,7 +149,7 @@ app.get('/health', (_req, res) => res.status(200).send('ok'));
 /* =========================
    n8n 代理：文字 → 你的 n8n Webhook
    ========================= */
-app.post('/api/chat', verifyParentIdentity, async (req, res) => {
+app.post('/api/chat', verifyParentIdentity, chatRateLimiter, async (req, res) => {
   const url = process.env.N8N_WEBHOOK_URL;
   if (!url) return res.status(500).json({ error: '缺少 N8N_WEBHOOK_URL' });
 
@@ -170,7 +198,7 @@ app.post('/api/chat', verifyParentIdentity, async (req, res) => {
 /* =========================
    n8n 代理：jaundice_clinical → jaundice-clinical Webhook
    ========================= */
-app.post('/api/chat-clinical', requireAuth, async (req, res) => {
+app.post('/api/chat-clinical', requireAuth, chatClinicalRateLimiter, async (req, res) => {
   const url = process.env.N8N_WEBHOOK_URL_CLINICAL;
   if (!url) return res.status(500).json({ error: '缺少 N8N_WEBHOOK_URL_CLINICAL' });
 
