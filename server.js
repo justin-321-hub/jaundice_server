@@ -126,6 +126,13 @@ const chatRateLimiter = createChatRateLimiter();
 const chatClinicalRateLimiter = createChatRateLimiter();
 
 /* =========================
+   n8n Webhook 共用密鑰
+   （與 n8n Webhook 節點的 Header Auth credential 值一致，
+   防止繞過本代理直接呼叫 n8n webhook）
+   ========================= */
+const N8N_WEBHOOK_SHARED_SECRET = process.env.N8N_WEBHOOK_SHARED_SECRET;
+
+/* =========================
    CORS（允許前端來源：家長端 + 醫護端）
    ========================= */
 app.use(cors({
@@ -152,6 +159,7 @@ app.get('/health', (_req, res) => res.status(200).send('ok'));
 app.post('/api/chat', verifyParentIdentity, chatRateLimiter, async (req, res) => {
   const url = process.env.N8N_WEBHOOK_URL;
   if (!url) return res.status(500).json({ error: '缺少 N8N_WEBHOOK_URL' });
+  if (!N8N_WEBHOOK_SHARED_SECRET) return res.status(500).json({ error: '缺少 N8N_WEBHOOK_SHARED_SECRET' });
 
   // 讀取 clientId（body 優先，其次 header），預設 anon
   const cid = req.body?.clientId || req.headers['x-client-id'] || 'anon';
@@ -164,7 +172,9 @@ app.post('/api/chat', verifyParentIdentity, chatRateLimiter, async (req, res) =>
         // 某些 WAF/Cloudflare 對沒有 UA 的請求會擋
         'User-Agent': 'fourleaf-proxy/1.0',
         // 將 clientId 也轉傳到上游
-        'X-Client-Id': cid
+        'X-Client-Id': cid,
+        // 與 n8n Webhook 的 Header Auth credential 對應，防止繞過本代理直打 webhook
+        'X-Webhook-Secret': N8N_WEBHOOK_SHARED_SECRET
       },
       // 將 clientId 合併進 body，避免前端漏傳
       body: JSON.stringify({ ...(req.body || {}), clientId: cid })
@@ -201,6 +211,7 @@ app.post('/api/chat', verifyParentIdentity, chatRateLimiter, async (req, res) =>
 app.post('/api/chat-clinical', requireAuth, chatClinicalRateLimiter, async (req, res) => {
   const url = process.env.N8N_WEBHOOK_URL_CLINICAL;
   if (!url) return res.status(500).json({ error: '缺少 N8N_WEBHOOK_URL_CLINICAL' });
+  if (!N8N_WEBHOOK_SHARED_SECRET) return res.status(500).json({ error: '缺少 N8N_WEBHOOK_SHARED_SECRET' });
 
   const cid = req.body?.clientId || req.headers['x-client-id'] || 'anon';
 
@@ -210,7 +221,8 @@ app.post('/api/chat-clinical', requireAuth, chatClinicalRateLimiter, async (req,
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'fourleaf-proxy/1.0',
-        'X-Client-Id': cid
+        'X-Client-Id': cid,
+        'X-Webhook-Secret': N8N_WEBHOOK_SHARED_SECRET
       },
       body: JSON.stringify({ ...(req.body || {}), clientId: cid })
     });
