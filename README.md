@@ -9,7 +9,7 @@
   - `/api/chat`：家長端，未登入可用；若帶 `parentId` 則需驗證身分
   - `/api/chat-clinical`：醫護端，強制登入才能使用
 - **Firebase 身分驗證**：以 Firebase ID Token 驗證使用者身分，並比對 token 內的 uid 與宣稱的 `parentId` / `clinicianId` 是否一致
-- **請求限流（Rate Limiting）**：每個使用者（或 IP）每分鐘最多 3 次請求，家長端與醫護端各自獨立計算
+- **請求限流（Rate Limiting）**：每個使用者（或 IP）每分鐘最多 3 次請求，家長端與醫護端各自獨立計算；失敗的請求（狀態碼 >= 400）不計入額度
 - **n8n Webhook 共用密鑰**：呼叫上游 n8n Webhook 時帶入共用密鑰，避免被繞過代理直接呼叫
 - **CORS 白名單**：僅允許指定前端網域跨網域存取
 - **健康檢查**：`GET /health`
@@ -51,7 +51,7 @@ npm start
 
 - 若 request body 未帶 `parentId`：不需驗證身分即可呼叫
 - 若 request body 帶 `parentId`：需於 `Authorization: Bearer <Firebase ID Token>` 帶入合法 token，且 token 的 uid 須與 `parentId` 一致，否則回傳 `401` / `403`
-- 限流：同一使用者（或 IP）每分鐘最多 3 次，超過回傳 `429`
+- 限流：同一使用者（或 IP）每分鐘最多 3 次，超過回傳 `429`；失敗的請求（例如上游 n8n 回傳 5xx）不計入次數
 
 ### `POST /api/chat-clinical`
 
@@ -59,11 +59,11 @@ npm start
 
 - 一律需於 `Authorization: Bearer <Firebase ID Token>` 帶入合法 token，否則回傳 `401`
 - 若 request body 帶 `clinicianId`：token 的 uid 須與其一致，否則回傳 `403`
-- 限流：同一使用者（或 IP）每分鐘最多 3 次，與 `/api/chat` 分開計算
+- 限流：同一使用者（或 IP）每分鐘最多 3 次，與 `/api/chat` 分開計算；失敗的請求不計入次數
 
 ## 安全性設計
 
 - **身分驗證**：透過 Firebase Admin SDK 驗證 ID Token，並嚴格比對宣稱身分與 token uid，防止冒用他人身分
-- **請求限流**：以 `express-rate-limit` 限制每位使用者的請求頻率，避免上游 n8n 配額被打爆
+- **請求限流**：以 `express-rate-limit` 限制每位使用者的請求頻率，避免上游 n8n 配額被打爆；並以 `skipFailedRequests` 讓失敗請求不計入額度，避免前端自動重試吃掉使用者額度
 - **Webhook 共用密鑰**：呼叫 n8n Webhook 時夾帶共用密鑰，防止有心人繞過本代理直接打 n8n Webhook
 - **CORS 白名單**：僅允許已知的前端網域（家長端 / 醫護端）跨網域呼叫 API

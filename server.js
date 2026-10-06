@@ -107,12 +107,15 @@ async function requireAuth(req, res, next) {
    - 每分鐘最多 3 次請求
    - 已登入（req.verifiedUid 由前面的身分驗證中介層設定）→ 以 uid 為 key
    - 未登入 → 退回以 IP 為 key
+   - 失敗的請求（回應狀態碼 >= 400，例如上游 n8n 5xx）不計入額度
    - /api/chat 與 /api/chat-clinical 各自獨立計算，互不影響
    ========================= */
 function createChatRateLimiter() {
   return rateLimit({
     windowMs: 60 * 1000,
     max: 3,
+    // 上游失敗（狀態碼 >= 400）的請求不計入額度，避免前端自動重試吃掉使用者額度
+    skipFailedRequests: true,
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => req.verifiedUid || req.ip,
