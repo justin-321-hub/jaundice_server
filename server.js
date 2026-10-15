@@ -32,14 +32,43 @@ if (!admin.apps.length) {
 }
 
 /* =========================
+   寶寶所有權檢查（與 firestore.rules 的 ownsBaby / canAccessBaby 保持一致）
+   - 授權來源只認 users/{uid}.babyIds（僅後端 Admin SDK 可寫），
+     不可相信前端傳來的 babyId，也不可使用舊的單一 babyId 欄位
+   - Admin SDK 會繞過 Security Rules，故此處需自行檢查
+   ========================= */
+async function getUserDoc(uid) {
+  const snap = await admin.firestore().collection('users').doc(uid).get();
+  return snap.exists ? snap.data() : null;
+}
+
+function parentOwnsBaby(userDoc, babyId) {
+  return Array.isArray(userDoc?.babyIds) && userDoc.babyIds.includes(babyId);
+}
+
+function isClinicianOrSuperuser(userDoc) {
+  return ['clinician', 'superuser'].includes(userDoc?.role);
+}
+
+/* =========================
    身分驗證中介層
    規則：
-   - request body 沒有 parentId（例如醫護端或未登入使用者）→ 不強制驗證，直接放行
+   - request body 沒有 parentId 也沒有 babyId（未登入的匿名使用者）→ 不強制驗證，直接放行
+   - request body 有 babyId 但沒有 parentId → 拒絕（無法驗證寶寶歸屬）
    - request body 有 parentId → 必須帶合法的 Authorization: Bearer <Firebase ID Token>，
      且 token 解出的 uid 必須與宣稱的 parentId 完全一致，否則拒絕
+   - request body 有 babyId → 該 uid 的 users.babyIds 必須包含它，否則 403
    ========================= */
 async function verifyParentIdentity(req, res, next) {
   const claimedParentId = req.body?.parentId;
+  const claimedBabyId = req.body?.babyId;
+
+  if (claimedBabyId != null && typeof claimedBabyId !== 'string') {
+    return res.status(400).json({ error: 'babyId 格式錯誤' });
+  }
+  if (claimedBabyId && !claimedParentId) {
+    return res.status(401).json({ error: '提供 babyId 時必須登入' });
+  }
   if (!claimedParentId) return next();
 
   const authHeader = req.headers['authorization'] || '';
@@ -58,10 +87,24 @@ async function verifyParentIdentity(req, res, next) {
       return res.status(403).json({ error: 'Token 與 parentId 不一致' });
     }
     req.verifiedUid = decoded.uid;
-    next();
   } catch (err) {
     console.error('[auth] verifyIdToken failed:', err?.message);
     return res.status(401).json({ error: 'Token 無效或已過期' });
+  }
+
+  if (!claimedBabyId) return next();
+
+  try {
+    const userDoc = await getUserDoc(req.verifiedUid);
+    if (!parentOwnsBaby(userDoc, claimedBabyId)) {
+      console.warn('[auth] baby ownership denied:', req.verifiedUid, claimedBabyId);
+      return res.status(403).json({ error: '無權存取此寶寶' });
+    }
+    next();
+  } catch (err) {
+    // 查不到授權資料時一律拒絕（fail closed）
+    console.error('[auth] ownership lookup failed:', err?.message);
+    return res.status(503).json({ error: '暫時無法驗證寶寶歸屬，請稍後再試' });
   }
 }
 
@@ -71,8 +114,8 @@ async function verifyParentIdentity(req, res, next) {
    - 一律要求帶合法的 Authorization: Bearer <Firebase ID Token>，即「有登入才能用」
    - request body 有 clinicianId → token 解出的 uid 必須與宣稱的 clinicianId 完全一致，否則拒絕
      （比照家長端 verifyParentIdentity 的 uid 比對方式）
-   - 目前不檢查角色（clinician）或此人能存取哪些 babyId，
-     細部授權（醫護能存取哪些院內寶寶）留待另外規劃，見 doc/功能待辦清單.md B4/S6
+   - users/{uid}.role 必須是 clinician 或 superuser，否則 403
+     （與 firestore.rules 的 canAccessBaby 一致：醫護可存取所有寶寶，故不再逐一檢查 babyId 歸屬）
    ========================= */
 async function requireAuth(req, res, next) {
   const authHeader = req.headers['authorization'] || '';
@@ -94,10 +137,22 @@ async function requireAuth(req, res, next) {
     }
 
     req.verifiedUid = decoded.uid;
-    next();
   } catch (err) {
     console.error('[auth-clinical] verifyIdToken failed:', err?.message);
     return res.status(401).json({ error: 'Token 無效或已過期' });
+  }
+
+  try {
+    const userDoc = await getUserDoc(req.verifiedUid);
+    if (!isClinicianOrSuperuser(userDoc)) {
+      console.warn('[auth-clinical] role denied:', req.verifiedUid, userDoc?.role);
+      return res.status(403).json({ error: '僅限醫護人員使用' });
+    }
+    next();
+  } catch (err) {
+    // 查不到授權資料時一律拒絕（fail closed）
+    console.error('[auth-clinical] role lookup failed:', err?.message);
+    return res.status(503).json({ error: '暫時無法驗證身分，請稍後再試' });
   }
 }
 
