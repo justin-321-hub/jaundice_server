@@ -8,6 +8,7 @@ const path = require('path');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const rateLimit = require('express-rate-limit');
+const { attachInternLive } = require('./intern/liveBridge');
 
 const app = express();
 
@@ -321,7 +322,39 @@ app.post('/api/chat-clinical', requireAuth, chatClinicalRateLimiter, async (req,
    啟動服務
    ========================= */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running: http://localhost:${PORT}`);
 
+});
+
+/* =========================
+   實習生語音助理（Gemini Live，WebSocket：/ws/intern-live）
+   不經 n8n；身分驗證與對話紀錄見 intern/liveBridge.js
+   ========================= */
+const internLive = attachInternLive(server, { admin, getUserDoc });
+
+// Render 部署／重啟時會送 SIGTERM（預設 30 秒後 SIGKILL）：
+// 1) 立即停止接新連線（server.close），讓進行中的 HTTP 請求（例如等 n8n 的 /api/chat）跑完
+// 2) 把進行中的語音通話收尾（寫入最後訊息與 ended_at）
+// 3) 全部結束就退出；超過 25 秒強制退出
+process.once('SIGTERM', async () => {
+  console.log('SIGTERM received, draining...');
+  const force = setTimeout(() => {
+    console.error('shutdown timeout, forcing exit');
+    process.exit(1);
+  }, 25_000);
+
+  const httpClosed = new Promise((resolve) => server.close(() => resolve()));
+  // 進行中的請求跑完後，它那條 keep-alive 連線才會變成閒置（Render proxy 會保持長連線），
+  // 只在一開始關一次不夠 → 排水期間持續清掃閒置連線，close 才不會拖到 keep-alive 逾時
+  const idleSweep = setInterval(() => server.closeIdleConnections?.(), 200);
+  try {
+    await internLive.shutdown();
+  } catch (err) {
+    console.error('shutdown error:', err?.message);
+  }
+  await httpClosed;
+  clearInterval(idleSweep);
+  clearTimeout(force);
+  process.exit(0);
 });
