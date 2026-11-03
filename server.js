@@ -9,6 +9,7 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const rateLimit = require('express-rate-limit');
 const { attachInternLive } = require('./intern/liveBridge');
+const { buildRow, insertDangerEvent } = require('./danger/dangerEventStore');
 
 const app = express();
 
@@ -308,6 +309,58 @@ app.post('/api/chat-clinical', requireAuth, chatClinicalRateLimiter, async (req,
       error: 'Upstream fetch failed',
       detail: err?.message || String(err)
     });
+  }
+});
+
+/* =========================
+   危險關鍵字事件上報 → Supabase（danger_events）
+   規則：
+   - 身分驗證「不阻擋」：安全事件寧可多記也不要因身分問題漏記，
+     故未帶 token（匿名）或 token 無效都照常寫入，但 verified = false
+   - 帶合法 Firebase ID Token → user_id 一律採用 token 解出的 uid，並標記 verified = true
+   - 限流：每分鐘 10 次，已驗證以 uid、否則以 IP 為 key（獨立於聊天額度）
+   ========================= */
+async function optionalIdentity(req, _res, next) {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ')
+    ? authHeader.slice('Bearer '.length).trim()
+    : null;
+  if (token) {
+    try {
+      req.verifiedUid = (await admin.auth().verifyIdToken(token)).uid;
+    } catch (err) {
+      console.warn('[danger-event] token invalid, record as unverified:', err?.message);
+    }
+  }
+  next();
+}
+
+const dangerEventRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.verifiedUid || req.ip,
+  handler: (_req, res) => {
+    res.status(429).json({ error: '請求太頻繁，請稍後再試' });
+  }
+});
+
+app.post('/api/danger-event', optionalIdentity, dangerEventRateLimiter, async (req, res) => {
+  let row;
+  try {
+    row = buildRow(req.body, { verifiedUid: req.verifiedUid });
+  } catch {
+    return res.status(400).json({ error: '格式錯誤' });
+  }
+
+  try {
+    await insertDangerEvent(row);
+    return res.status(204).end();
+  } catch (err) {
+    // 只記錄錯誤訊息，不記錄使用者輸入內容
+    console.error('[danger-event] insert failed:', err?.message);
+    return res.status(500).json({ error: '寫入失敗' });
   }
 });
 

@@ -93,6 +93,30 @@ npm start
 - 醫護可存取所有寶寶（與 `firestore.rules` 的 `canAccessBaby` 一致），因此不逐一檢查 `babyId` 歸屬
 - 限流：同一使用者（或 IP）每分鐘最多 3 次，與 `/api/chat` 分開計算；失敗的請求不計入次數
 
+### `POST /api/danger-event`
+
+前端（`jaundice`／`jaundice_inside`）命中危險關鍵字時上報，寫入 Supabase `danger_events`。
+
+Request body（JSON）：
+
+| 欄位 | 型別 | 必填 | 說明 |
+|---|---|---|---|
+| `source` | `"parent"` \| `"clinician"` | 是 | 來源前端 |
+| `keyword` | string（≤100 字） | 是 | 命中的關鍵字 |
+| `text` | string（超過 2000 字截斷） | 否 | 觸發當下的輸入原文；前端可設定不送 |
+| `userId` | string | 否 | `parentId` / `clinicianId` |
+| `clientId` | string | 否 | 前端 localStorage UUID |
+| `babyId` | string | 否 | 病嬰 ID |
+
+- 回應：成功 `204`；格式錯誤 `400`；寫入失敗 `500`；超過限流 `429`
+- **身分驗證不阻擋**：沒帶 token（匿名）或 token 無效都照常寫入，`verified = false`，`user_id` 為前端宣稱的值（可被偽造，僅供參考）；帶合法 Firebase ID Token 時 `user_id` 一律採用 token 解出的 uid，`verified = true`
+- 限流：每分鐘最多 10 次（已驗證以 uid、否則以 IP 為 key），與聊天額度分開計算
+- 後端 log 只記錄錯誤訊息，**不記錄使用者輸入內容**
+
+#### Supabase 設定
+
+在 Supabase **SQL Editor** 執行 [`supabase/danger_events.sql`](supabase/danger_events.sql)（可重複執行；內含執行後的驗證查詢）。資料表啟用 RLS 且不建 policy，僅 `service_role` 可 INSERT。`content` 欄位是使用者輸入原文，屬高度敏感個資，請限制 Dashboard 存取。
+
 ## 實習生語音助理（`/ws/intern-live`）
 
 ```
